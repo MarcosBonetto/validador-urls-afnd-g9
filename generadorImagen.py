@@ -56,6 +56,8 @@ def generar_grafico_automata():
 
     dot.edge('dominio', 'dominio', label='[a-zA-Z0-9]')
     dot.edge('dominio', 'extension', label='.')
+    dot.edge('dominio', 'subdominio', label='.')   
+    dot.edge('dominio', 'PAIS', label='.')  
 
     # Extensión TLD (3 letras obligatorias)
     dot.edge('extension', '1letra', label='[a-zA-Z]')

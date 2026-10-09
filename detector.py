@@ -44,7 +44,7 @@ nfa_url = NFA(
             c: {'dominio'} for c in ALFANUMERICO
         },
         'dominio': {
-            '.': {'extension'},
+            '.': {'extension', 'subdominio', 'PAIS'},   
             **{c: {'dominio'} for c in ALFANUMERICO}
         },
         # ----------------------------------------
@@ -130,7 +130,7 @@ def analizar_estructura_por_estados(nfa, cadena):
 # 3. INTERFAZ GRÁFICA CON PANEL CON SCROLL PARA LA IMAGEN
 # ---------------------------------------------------------
 def evaluar_url():
-    cadena = entrada_url.get().strip()
+    cadena = entrada_url.get().strip().lower()
     if not cadena:
         lbl_resultado.config(text="Por favor, ingrese una URL", fg="orange")
         lbl_estructura.config(text="")
