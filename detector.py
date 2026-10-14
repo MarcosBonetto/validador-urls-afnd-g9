@@ -44,7 +44,7 @@ nfa_url = NFA(
             c: {'dominio'} for c in ALFANUMERICO
         },
         'dominio': {
-            '.': {'extension', 'subdominio', 'PAIS'},   
+            '.': {'extension', '1caracter_dominio', 'PAIS'},  
             **{c: {'dominio'} for c in ALFANUMERICO}
         },
         # ----------------------------------------
