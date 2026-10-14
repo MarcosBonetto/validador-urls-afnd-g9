@@ -2961,6 +2961,16 @@
 			<read>.</read>&#13;
 		</transition>&#13;
 		<transition>&#13;
+			<from>8</from>&#13;
+			<to>26</to>&#13;
+			<read>.</read>&#13;
+		</transition>&#13;
+		<transition>&#13;
+			<from>8</from>&#13;
+			<to>23</to>&#13;
+			<read>.</read>&#13;
+		</transition>&#13;
+		<transition>&#13;
 			<from>14</from>&#13;
 			<to>15</to>&#13;
 			<read>5</read>&#13;
