@@ -8,16 +8,16 @@ from automata.fa.nfa import NFA
 LETRAS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 DIGITOS = set("0123456789")
 ALFANUMERICO = LETRAS | DIGITOS
-SIMBOLOS = {':', '/', '.'}
+SIMBOLOS = {':', '/', '.', '?', '=', '-', '&'}
 
 nfa_url = NFA(
     states={
         'q0', 'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q21', 'q7',
-        'subdominio', '1caracter_dominio', 'dominio',  # <- Estado agregado
+        'subdominio', 'subdominio_guion', 'dominio_guion', '1caracter_dominio', 'dominio',  # <- Estado agregado
         'extension', '1letra', '2letra', '3letra',
-        'PAIS', '1LETRA', '2LETRA',
+        'PAIS', '1LETRA', '2LETRA', 'tld_largo',
         'puerto', '1num', '2num', '3num', '4num', '5num',
-        'ruta', 'q20'
+        'ruta', 'consulta_inicio', 'consulta_clave', 'consulta_valor_inicio', 'consulta_valor', 'q20'
     },
     input_symbols=ALFANUMERICO | SIMBOLOS,
     transitions={
@@ -36,17 +36,30 @@ nfa_url = NFA(
 
         # --- VALIDACIÓN SUBDOMINIO Y DOMINIO ---
         'subdominio': {
-            '.': {'1caracter_dominio'},  # Pasa a exigir al menos 1 carácter
+            '.': {'1caracter_dominio'},
+            '-': {'subdominio_guion'},
             **{c: {'subdominio'} for c in ALFANUMERICO}
-        },
+            },
+            
+        'subdominio_guion': {
+            '-': {'subdominio_guion'},
+            **{c: {'subdominio'} for c in ALFANUMERICO}
+            },
+
         '1caracter_dominio': {
             # Consume 1 carácter alfanumérico obligatorio para entrar a 'dominio'
             c: {'dominio'} for c in ALFANUMERICO
         },
         'dominio': {
-            '.': {'extension', '1caracter_dominio', 'PAIS'},  
+            '.': {'extension', '1caracter_dominio', 'PAIS'},
+            '-': {'dominio_guion'},
             **{c: {'dominio'} for c in ALFANUMERICO}
-        },
+            },
+            
+        'dominio_guion': {
+            '-': {'dominio_guion'},
+            **{c: {'dominio'} for c in ALFANUMERICO}
+            },
         # ----------------------------------------
 
         'extension': {c: {'1letra'} for c in LETRAS},
@@ -56,29 +69,66 @@ nfa_url = NFA(
         '3letra': {
             ':': {'puerto'},
             '/': {'ruta'},
-            '.': {'PAIS'}
-        },
+            '.': {'PAIS'},
+            '?': {'consulta_inicio'},
+            **{c: {'tld_largo'} for c in LETRAS}
+            },
+
+        'tld_largo': {
+            ':': {'puerto'},
+            '/': {'ruta'},
+            '.': {'PAIS'},
+            '?': {'consulta_inicio'},
+            **{c: {'tld_largo'} for c in LETRAS}
+            },
 
         'PAIS': {c: {'1LETRA'} for c in LETRAS},
         '1LETRA': {c: {'2LETRA'} for c in LETRAS},
 
         '2LETRA': {
             ':': {'puerto'},
+            '?': {'consulta_inicio'},
             '/': {'ruta'}
         },
 
         'puerto': {c: {'1num'} for c in DIGITOS},
-        '1num': {'/': {'ruta'}, **{c: {'2num'} for c in DIGITOS}},
-        '2num': {'/': {'ruta'}, **{c: {'3num'} for c in DIGITOS}},
-        '3num': {'/': {'ruta'}, **{c: {'4num'} for c in DIGITOS}},
-        '4num': {'/': {'ruta'}, **{c: {'5num'} for c in DIGITOS}},
-        '5num': {'/': {'ruta'}},
+        '1num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'2num'} for c in DIGITOS}},
+        '2num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'3num'} for c in DIGITOS}},
+        '3num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'4num'} for c in DIGITOS}},
+        '4num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'5num'} for c in DIGITOS}},
+        '5num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'5num'} for c in DIGITOS}},
 
-        'ruta': {c: {'q20'} for c in ALFANUMERICO},
-        'q20': {c: {'q20'} for c in ALFANUMERICO}
+        'ruta': {
+            '?': {'consulta_inicio'},
+            **{c: {'q20'} for c in ALFANUMERICO}
+            },
+            
+        'q20': {
+            '/': {'ruta'},
+            '?': {'consulta_inicio'},
+            **{c: {'q20'} for c in ALFANUMERICO}
+            },
+
+        'consulta_inicio': {
+            c: {'consulta_clave'} for c in ALFANUMERICO
+            },
+            
+        'consulta_clave': {
+            '=': {'consulta_valor_inicio'},
+            **{c: {'consulta_clave'} for c in ALFANUMERICO}
+            },
+            
+        'consulta_valor_inicio': {
+            c: {'consulta_valor'} for c in ALFANUMERICO
+            },
+            
+        'consulta_valor': {
+            '&': {'consulta_inicio'},
+            **{c: {'consulta_valor'} for c in ALFANUMERICO}
+            }
     },
     initial_state='q0',
-    final_states={'3letra', '2LETRA', '1num', '2num', '3num', '4num', '5num', 'q20'}
+    final_states={'3letra', '2LETRA', 'tld_largo', '1num', '2num', '3num', '4num', '5num', 'ruta', 'consulta_valor', 'q20'}
 )
 
 # ---------------------------------------------------------
@@ -123,31 +173,86 @@ def analizar_estructura_por_estados(nfa, cadena):
         componentes.append("puerto TCP")
     if 'ruta' in camino or 'q20' in camino:
         componentes.append("ruta/path")
+    if 'consulta_inicio' in camino:
+        componentes.append("parámetros de consulta")
 
     return " con ".join(componentes)
 
 # ---------------------------------------------------------
 # 3. INTERFAZ GRÁFICA CON PANEL CON SCROLL PARA LA IMAGEN
 # ---------------------------------------------------------
+
 def evaluar_url():
     cadena = entrada_url.get().strip().lower()
+
     if not cadena:
-        lbl_resultado.config(text="Por favor, ingrese una URL", fg="orange")
+        lbl_resultado.config(
+            text="Por favor, ingrese una URL",
+            fg="orange"
+        )
         lbl_estructura.config(text="")
         return
-    
+
     try:
         es_valida = nfa_url.accepts_input(cadena)
+
         if es_valida:
+            camino = obtener_camino_exitoso(nfa_url, cadena)
+
+            # Comprobar el rango del puerto
+            if camino and 'puerto' in camino:
+                posicion = camino.index('puerto')
+                digitos_puerto = ""
+
+                while posicion < len(cadena) and cadena[posicion] in DIGITOS:
+                    digitos_puerto += cadena[posicion]
+                    posicion += 1
+
+                numero_puerto = int(digitos_puerto)
+
+                if numero_puerto > 65535:
+                    lbl_resultado.config(
+                        text="✗ PUERTO FUERA DE RANGO",
+                        fg="#c62828"
+                    )
+                    lbl_estructura.config(
+                        text="El puerto debe estar entre 0 y 65535.",
+                        fg="#555555"
+                    )
+                    return
+
+            # URL aceptada
             estructura = analizar_estructura_por_estados(nfa_url, cadena)
-            lbl_resultado.config(text="✓ URL CON ESTRUCTURA VÁLIDA", fg="#2e7d32")
-            lbl_estructura.config(text=f"Estructura detectada: {estructura}", fg="#1565c0")
+
+            lbl_resultado.config(
+                text="✓ URL CON ESTRUCTURA VÁLIDA",
+                fg="#2e7d32"
+            )
+            lbl_estructura.config(
+                text=f"Estructura detectada: {estructura}",
+                fg="#1565c0"
+            )
+
         else:
-            lbl_resultado.config(text="✗ URL CON ESTRUCTURA INVÁLIDA", fg="#c62828")
-            lbl_estructura.config(text="La cadena no cumple con las reglas del autómata.", fg="#555555")
-    except Exception:
-        lbl_resultado.config(text="✗ Rechazada (carácter no permitido)", fg="#c62828")
+            # URL rechazada por el AFND
+            lbl_resultado.config(
+                text="✗ URL CON ESTRUCTURA INVÁLIDA",
+                fg="#c62828"
+            )
+            lbl_estructura.config(
+                text="La cadena no cumple con las reglas del autómata.",
+                fg="#555555"
+            )
+
+    except Exception as e:
+        print(f"Error durante la validación: {e}")
+
+        lbl_resultado.config(
+            text="✗ ERROR AL VALIDAR LA URL",
+            fg="#c62828"
+        )
         lbl_estructura.config(text="")
+
 
 ventana = tk.Tk()
 ventana.title("Validador de URLs - AFND")
@@ -203,7 +308,7 @@ try:
     canvas.configure(xscrollcommand=scroll_x.set, yscrollcommand=scroll_y.set)
 
     scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-    scroll_y.pack(side=tk.RIGHT, fill=fill_y if 'fill_y' in locals() else tk.Y)
+    scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
     canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     # 3. Insertar la imagen en el Canvas
