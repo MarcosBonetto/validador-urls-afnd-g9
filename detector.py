@@ -1,5 +1,10 @@
-import tkinter as tk
-from PIL import Image, ImageTk
+"""Motor de validación sintáctica de URLs.
+
+Reconoce un subconjunto definido de URLs; no verifica existencia ni seguridad.
+"""
+from pathlib import Path
+from collections import defaultdict
+import re
 from automata.fa.nfa import NFA
 
 # ---------------------------------------------------------
@@ -96,7 +101,7 @@ nfa_url = NFA(
         '2num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'3num'} for c in DIGITOS}},
         '3num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'4num'} for c in DIGITOS}},
         '4num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'5num'} for c in DIGITOS}},
-        '5num': {'/': {'ruta'}, '?': {'consulta_inicio'}, **{c: {'5num'} for c in DIGITOS}},
+        '5num': {'/': {'ruta'}, '?': {'consulta_inicio'}},  # Máximo 5 dígitos
 
         'ruta': {
             '?': {'consulta_inicio'},
@@ -131,198 +136,184 @@ nfa_url = NFA(
     final_states={'3letra', '2LETRA', 'tld_largo', '1num', '2num', '3num', '4num', '5num', 'ruta', 'consulta_valor', 'q20'}
 )
 
+
 # ---------------------------------------------------------
-# 2. IDENTIFICACIÓN DE ESTRUCTURA POR TRAZA
+# 2. RECONOCIMIENTO Y SIMULACIÓN (SIN TRANSICIONES LAMBDA)
 # ---------------------------------------------------------
+
+
+def normalizar_protocolo(cadena):
+    """El esquema HTTP(S) no distingue mayúsculas; la ruta sí puede hacerlo."""
+    return re.sub(r"^https?://", lambda m: m.group(0).lower(), cadena, flags=re.IGNORECASE)
+
+
+def simular_afnd(nfa, cadena):
+    """Después de cada símbolo devuelve TODOS los estados activos del AFND."""
+    estados_actuales = {nfa.initial_state}
+    pasos = [{
+        "indice": 0, "simbolo": None, "estados": estados_actuales.copy(),
+        "transiciones": []
+    }]
+
+    for indice, simbolo in enumerate(cadena, start=1):
+        estados_siguientes = set()
+        transiciones_utilizadas = []
+        for estado in sorted(estados_actuales):
+            destinos = nfa.transitions.get(estado, {}).get(simbolo, set())
+            for destino in sorted(destinos):
+                estados_siguientes.add(destino)
+                transiciones_utilizadas.append((estado, simbolo, destino))
+
+        pasos.append({
+            "indice": indice,
+            "simbolo": simbolo,
+            "estados": estados_siguientes.copy(),
+            "transiciones": transiciones_utilizadas,
+        })
+        estados_actuales = estados_siguientes
+    return pasos
+
+
 def obtener_camino_exitoso(nfa, cadena):
-    def dfs(estado_actual, idx, camino):
-        if idx == len(cadena):
-            if estado_actual in nfa.final_states:
-                return camino
+    """Reconstruye una rama aceptada sin recursión y sin elegir estados al azar."""
+    padres = [{nfa.initial_state: None}]
+    for simbolo in cadena:
+        nuevos = {}
+        for estado in sorted(padres[-1]):
+            for destino in sorted(nfa.transitions.get(estado, {}).get(simbolo, set())):
+                nuevos.setdefault(destino, estado)
+        padres.append(nuevos)
+        if not nuevos:
             return None
 
-        simbolo = cadena[idx]
-        transiciones = nfa.transitions.get(estado_actual, {})
-        if simbolo in transiciones:
-            for siguiente in transiciones[simbolo]:
-                res = dfs(siguiente, idx + 1, camino + [siguiente])
-                if res:
-                    return res
+    finales = sorted(set(padres[-1]) & set(nfa.final_states))
+    if not finales:
         return None
 
-    return dfs(nfa.initial_state, 0, [nfa.initial_state])
+    estado = finales[0]
+    camino = [estado]
+    for indice in range(len(cadena), 0, -1):
+        estado = padres[indice][estado]
+        camino.append(estado)
+    return list(reversed(camino))
 
 
 def analizar_estructura_por_estados(nfa, cadena):
     camino = obtener_camino_exitoso(nfa, cadena)
     if not camino:
-        return None
+        return "No se encontró una rama aceptada"
 
     componentes = []
     if 'q1' in camino or 'q7' in camino:
-        componentes.append("protocolo (HTTPS)" if 'q5' in camino else "protocolo (HTTP)")
+        componentes.append('HTTPS' if 'q5' in camino else 'HTTP')
     if 'subdominio' in camino:
-        componentes.append("subdominio")
+        componentes.append('subdominio')
     if 'dominio' in camino or '1caracter_dominio' in camino:
-        componentes.append("dominio")
-    if '3letra' in camino:
-        componentes.append("extensión TLD")
+        componentes.append('dominio')
+    if '3letra' in camino or 'tld_largo' in camino:
+        componentes.append('TLD')
     if '2LETRA' in camino:
-        componentes.append("extensión territorial (ccTLD)")
-    if 'puerto' in camino or '1num' in camino:
-        componentes.append("puerto TCP")
+        componentes.append('sufijo de dos letras')
+    if 'puerto' in camino:
+        componentes.append('puerto')
     if 'ruta' in camino or 'q20' in camino:
-        componentes.append("ruta/path")
+        componentes.append('ruta')
     if 'consulta_inicio' in camino:
-        componentes.append("parámetros de consulta")
+        componentes.append('consulta')
+    return ' · '.join(componentes) or 'URL'
 
-    return " con ".join(componentes)
 
-# ---------------------------------------------------------
-# 3. INTERFAZ GRÁFICA CON PANEL CON SCROLL PARA LA IMAGEN
-# ---------------------------------------------------------
+def extraer_puerto(cadena):
+    """Extrae el puerto del componente autoridad; NO decide si la URL es válida."""
+    resto = cadena.split('://', 1)[-1] if '://' in cadena else cadena
+    autoridad = re.split(r'[/?]', resto, maxsplit=1)[0]
+    coincidencia = re.search(r':(\d+)$', autoridad)
+    if coincidencia:
+        return int(coincidencia.group(1))
+    return None
 
-def evaluar_url():
-    cadena = entrada_url.get().strip().lower()
+
+def evaluar_cadena(nfa, texto):
+    cadena = normalizar_protocolo(texto.strip())
+    pasos = simular_afnd(nfa, cadena)
+    estados_finales = pasos[-1]['estados'] & set(nfa.final_states)
+    aceptada_afnd = bool(estados_finales)
 
     if not cadena:
-        lbl_resultado.config(
-            text="Por favor, ingrese una URL",
-            fg="orange"
-        )
-        lbl_estructura.config(text="")
-        return
-
-    try:
-        es_valida = nfa_url.accepts_input(cadena)
-
-        if es_valida:
-            camino = obtener_camino_exitoso(nfa_url, cadena)
-
-            # Comprobar el rango del puerto
-            if camino and 'puerto' in camino:
-                posicion = camino.index('puerto')
-                digitos_puerto = ""
-
-                while posicion < len(cadena) and cadena[posicion] in DIGITOS:
-                    digitos_puerto += cadena[posicion]
-                    posicion += 1
-
-                numero_puerto = int(digitos_puerto)
-
-                if numero_puerto > 65535:
-                    lbl_resultado.config(
-                        text="✗ PUERTO FUERA DE RANGO",
-                        fg="#c62828"
-                    )
-                    lbl_estructura.config(
-                        text="El puerto debe estar entre 0 y 65535.",
-                        fg="#555555"
-                    )
-                    return
-
-            # URL aceptada
-            estructura = analizar_estructura_por_estados(nfa_url, cadena)
-
-            lbl_resultado.config(
-                text="✓ URL CON ESTRUCTURA VÁLIDA",
-                fg="#2e7d32"
-            )
-            lbl_estructura.config(
-                text=f"Estructura detectada: {estructura}",
-                fg="#1565c0"
-            )
-
+        mensaje = 'Ingresá una URL para validar.'
+        aceptada = False
+    elif not aceptada_afnd:
+        primer_bloqueo = next((p for p in pasos[1:] if not p['estados']), None)
+        if primer_bloqueo is not None:
+            pos = primer_bloqueo['indice']
+            caracter = repr(primer_bloqueo['simbolo'])
+            mensaje = f'Sin transiciones posibles en la posición {pos}, al leer {caracter}.'
         else:
-            # URL rechazada por el AFND
-            lbl_resultado.config(
-                text="✗ URL CON ESTRUCTURA INVÁLIDA",
-                fg="#c62828"
-            )
-            lbl_estructura.config(
-                text="La cadena no cumple con las reglas del autómata.",
-                fg="#555555"
-            )
+            mensaje = 'Se consumió toda la cadena, pero ningún estado activo es final.'
+        aceptada = False
+    else:
+        puerto = extraer_puerto(cadena)
+        if puerto is not None and not 0 <= puerto <= 65535:
+            mensaje = f'El puerto {puerto} excede el valor máximo permitido (65535).'
+            aceptada = False
+        else:
+            mensaje = 'La cadena pertenece al lenguaje reconocido por el validador.'
+            aceptada = True
 
-    except Exception as e:
-        print(f"Error durante la validación: {e}")
+    return {
+        'cadena': cadena,
+        'pasos': pasos,
+        'aceptada_afnd': aceptada_afnd,
+        'aceptada': aceptada,
+        'mensaje': mensaje,
+        'estados_finales': estados_finales,
+        'estructura': analizar_estructura_por_estados(nfa, cadena) if aceptada_afnd else None,
+    }
 
-        lbl_resultado.config(
-            text="✗ ERROR AL VALIDAR LA URL",
-            fg="#c62828"
-        )
-        lbl_estructura.config(text="")
-
-
-ventana = tk.Tk()
-ventana.title("Validador de URLs - AFND")
-ventana.geometry("950x700")
-ventana.config(bg="#f5f5f5")
-
-lbl_titulo = tk.Label(ventana, text="Detector de URLs por Autómata Finito", font=("Helvetica", 14, "bold"), bg="#f5f5f5")
-lbl_titulo.pack(pady=10)
-
-frame_entrada = tk.Frame(ventana, bg="#f5f5f5")
-frame_entrada.pack(pady=5)
-
-entrada_url = tk.Entry(frame_entrada, width=45, font=("Consolas", 11))
-entrada_url.pack(side=tk.LEFT, padx=5)
-entrada_url.focus()
-
-btn_validar = tk.Button(frame_entrada, text="Evaluar con AFND", font=("Helvetica", 10, "bold"), bg="#1976d2", fg="white", padx=10, pady=4, command=evaluar_url)
-btn_validar.pack(side=tk.LEFT, padx=5)
-
-lbl_resultado = tk.Label(ventana, text="", font=("Helvetica", 12, "bold"), bg="#f5f5f5")
-lbl_resultado.pack(pady=5)
-
-lbl_estructura = tk.Label(ventana, text="", font=("Helvetica", 10, "italic"), bg="#f5f5f5", wraplength=850)
-lbl_estructura.pack(pady=5)
-
-lbl_img_titulo = tk.Label(ventana, text="Diagrama de Estados (desplázate para navegar):", font=("Helvetica", 10, "bold"), bg="#f5f5f5")
-lbl_img_titulo.pack(pady=(10, 2))
 
 # ---------------------------------------------------------
-# CONTENEDOR DE IMAGEN CON SCROLLBARS (Navegación fluida)
+# 3. GRÁFICO GENERADO A PARTIR DEL MISMO AFND
 # ---------------------------------------------------------
-RUTA_IMAGEN_PNG = "automata_graphviz.png"
 
-try:
-    # 1. Cargar y escalar la imagen
-    img_orig = Image.open(RUTA_IMAGEN_PNG)
-    
-    factor_escala = 0.6  # Ajusta entre 0.5 y 1.0 según la pantalla
-    ancho_nuevo = int(img_orig.width * factor_escala)
-    alto_nuevo = int(img_orig.height * factor_escala)
-    
-    img_resiz = img_orig.resize((ancho_nuevo, alto_nuevo), Image.Resampling.LANCZOS)
-    img_tk = ImageTk.PhotoImage(img_resiz)
+def abreviar_simbolos(simbolos):
+    restantes = set(simbolos)
+    partes = []
+    for letras, etiqueta in (
+        (set('abcdefghijklmnopqrstuvwxyz'), 'a-z'),
+        (set('ABCDEFGHIJKLMNOPQRSTUVWXYZ'), 'A-Z'),
+        (DIGITOS, '0-9'),
+    ):
+        if letras <= restantes:
+            partes.append(etiqueta)
+            restantes.difference_update(letras)
+    partes.extend(sorted(restantes))
+    return ', '.join(partes)
 
-    # 2. Crear el contenedor con Scrollbars (solo si la imagen abrió con éxito)
-    frame_canvas = tk.Frame(ventana, bg="#cccccc")
-    frame_canvas.pack(fill=tk.BOTH, expand=True, padx=20, pady=(5, 20))
 
-    canvas = tk.Canvas(frame_canvas, bg="#ffffff")
-    scroll_x = tk.Scrollbar(frame_canvas, orient=tk.HORIZONTAL, command=canvas.xview)
-    scroll_y = tk.Scrollbar(frame_canvas, orient=tk.VERTICAL, command=canvas.yview)
+def generar_grafo(nfa, destino):
+    """Evita duplicar a mano las transiciones en generadorImagen.py."""
+    from graphviz import Digraph
+    grafo = Digraph('AFND_URL', format='png')
+    grafo.attr(rankdir='LR', dpi='115', nodesep='0.35', ranksep='0.5')
+    grafo.attr('node', fontname='Arial', fontsize='10')
+    grafo.attr('edge', fontname='Arial', fontsize='9')
+    grafo.node('_inicio_', shape='point')
+    grafo.edge('_inicio_', nfa.initial_state)
 
-    canvas.configure(xscrollcommand=scroll_x.set, yscrollcommand=scroll_y.set)
+    for estado in sorted(nfa.states):
+        final = estado in nfa.final_states
+        grafo.node(estado, shape='doublecircle' if final else 'circle')
 
-    scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-    scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    agrupadas = defaultdict(set)
+    for origen, por_simbolo in nfa.transitions.items():
+        for simbolo, destinos in por_simbolo.items():
+            for destino_estado in destinos:
+                agrupadas[(origen, destino_estado)].add(simbolo)
+    for (origen, destino_estado), simbolos in sorted(agrupadas.items()):
+        grafo.edge(origen, destino_estado, label=abreviar_simbolos(simbolos))
 
-    # 3. Insertar la imagen en el Canvas
-    canvas.create_image(0, 0, anchor=tk.NW, image=img_tk)
-    canvas.config(scrollregion=(0, 0, ancho_nuevo, alto_nuevo))
-    canvas.image = img_tk
+    destino = Path(destino)
+    resultado = grafo.render(filename=destino.stem, directory=str(destino.parent), cleanup=True)
+    return Path(resultado)
 
-except FileNotFoundError:
-    # Mensaje de error si la imagen no se encuentra en el directorio
-    lbl_imagen = tk.Label(
-        ventana, 
-        text="No se encontró 'automata_graphviz.png'. Ejecute el generador de gráfico primero.", 
-        font=("Helvetica", 9), fg="red", bg="#ffebee", padx=10, pady=10
-    )
-    lbl_imagen.pack(pady=5)
 
-ventana.mainloop()
