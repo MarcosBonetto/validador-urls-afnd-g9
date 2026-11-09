@@ -1,7 +1,3 @@
-"""Motor de validación sintáctica de URLs.
-
-Reconoce un subconjunto definido de URLs; no verifica existencia ni seguridad.
-"""
 from pathlib import Path
 from collections import defaultdict
 import re

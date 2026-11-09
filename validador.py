@@ -1,13 +1,8 @@
-"""Interfaz de escritorio para la validación sintáctica de direcciones web.
-
-Ejecutar: py validador_urls.py
-El reconocimiento lo realiza motor_validacion.py.
-"""
 from datetime import datetime
 from urllib.parse import urlsplit
 import tkinter as tk
 
-from motor_validacion import evaluar_cadena, nfa_url
+from detector import evaluar_cadena, nfa_url, generar_grafo
 
 
 class Paleta:
@@ -151,6 +146,8 @@ class ValidadorURLs:
         self.entrada.pack(fill='x', padx=1, pady=1, ipady=14, ipadx=13)
         self.entrada.bind('<Return>', lambda _e: self.validar())
         self._boton(fila, 'Validar URL', self.validar, principal=True).pack(side='left')
+        self._boton(fila, 'Ver grafo AFND', self.mostrar_grafo, compacto=True).pack(
+            side='left', padx=(10, 0))
 
         ejemplos = tk.Frame(formulario, bg=Paleta.BLANCO)
         ejemplos.pack(fill='x', pady=(15, 0))
@@ -296,6 +293,14 @@ class ValidadorURLs:
         self.valor.set(url)
         self.validar()
 
+    def mostrar_grafo(self):
+        """Abre el visor; el motor y las transiciones permanecen sin cambios."""
+        from visor_grafo import abrir_visor_grafo
+        abrir_visor_grafo(
+            self.root,
+            regenerar=lambda destino: generar_grafo(nfa_url, destino),
+        )
+
     def validar(self):
         texto = self.valor.get().strip()
         resultado = evaluar_cadena(nfa_url, texto)
@@ -335,8 +340,6 @@ class ValidadorURLs:
         self._refrescar_historial()
 
     def _descomponer(self, cadena):
-        # urlsplit interpreta la parte inicial sin esquema como ruta si falta '//'.
-        # Agregamos '//' solo para extraer componentes, nunca para validar.
         tiene_esquema = '://' in cadena
         parsed = urlsplit(cadena if tiene_esquema else '//' + cadena)
         host = parsed.hostname or '—'
@@ -366,7 +369,6 @@ class ValidadorURLs:
             abreviado = url if len(url) < 29 else url[:26] + '…'
             texto = self._texto(fila, abreviado, 9, Paleta.TEXTO)
             texto.pack(side='left')
-            # Clic sobre el registro: recupera esa URL para volver a verificarla.
             for widget in (fila, texto):
                 widget.bind('<Button-1>', lambda _e, valor=url: self._usar_ejemplo(valor))
                 widget.configure(cursor='hand2')
